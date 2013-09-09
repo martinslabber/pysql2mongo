@@ -48,13 +48,27 @@ def sql_to_spec(query):
             return [item for item in in_list]
 
     @debug_print
+    def select_count_func(tokens=None):
+        return full_select_func(tokens, 'count')
+
+    @debug_print
+    def select_distinct_func(tokens=None):
+        return full_select_func(tokens, 'distinct')
+
+    @debug_print
     def select_func(tokens=None):
+        return full_select_func(tokens, 'select')
+
+    def full_select_func(tokens=None, method='select'):
         """
         Take tokens and return a dictionary.
         """
+        action = {'distinct': 'distinct',
+                  'count': 'count'
+                  }.get(method, 'find')
         if tokens is None:
             return
-        ret = {'find': True,
+        ret = {action: True,
                'fields': {item: 1 for item in fix_token_list(tokens.asList())}}
         if ret['fields'].get('id'):  # Use _id and not id
             # Drop _id from fields since mongo always return _id
@@ -78,11 +92,21 @@ def sql_to_spec(query):
                 '>': '$gt',
                 '>=': '$gte',
                 '<': '$lt',
-                '<=': '$lte'}.get(tokens[1])
+                '<=': '$lte',
+                'like': '$regex'}.get(tokens[1])
+
+        find_value = tokens[2].strip('"').strip("'")
+        if cond == '$regex':
+            if find_value[0] != '%':
+                find_value = "^" + find_value
+            if find_value[-1] != '%':
+                find_value = find_value + "$"
+            find_value = find_value.strip("%")
+
         if cond is None:
-            expr = {tokens[0]: tokens[2].strip('"').strip("'")}
+            expr = {tokens[0]: find_value}
         else:
-            expr = {tokens[0]: {cond: tokens[2].strip('"').strip("'")}}
+            expr = {tokens[0]: {cond: find_value}}
 
         return expr
 
@@ -99,7 +123,7 @@ def sql_to_spec(query):
     # TODO: Reduce list of imported functions.
     from pyparsing import (Word, alphas, CaselessKeyword, Group, Optional, ZeroOrMore,
                            Forward, Suppress, alphanums, OneOrMore, quotedString,
-                           Combine, Keyword, Literal, replaceWith, oneOf,
+                           Combine, Keyword, Literal, replaceWith, oneOf, nums,
                            removeQuotes, QuotedString, Dict)
 
     LPAREN, RPAREN = map(Suppress, "()")
@@ -108,7 +132,7 @@ def sql_to_spec(query):
     SELECT = Suppress(CaselessKeyword('SELECT'))
     WHERE = Suppress(CaselessKeyword('WHERE'))
     FROM = Suppress(CaselessKeyword('FROM'))
-    CONDITIONS = oneOf("= != < > <= >=")
+    CONDITIONS = oneOf("= != < > <= >= like", caseless=True)
     #CONDITIONS = (Keyword("=") | Keyword("!=") |
     #              Keyword("<") | Keyword(">") |
     #              Keyword("<=") | Keyword(">="))
@@ -116,6 +140,7 @@ def sql_to_spec(query):
     OR = CaselessKeyword('or')
 
     word_match = Word(alphanums + "._") | quotedString
+    number = Word(nums)
     statement = Group(word_match + CONDITIONS + word_match
                       ).setParseAction(where_func)
     select_fields = Group(SELECT + (word_match | Keyword("*")) +
@@ -123,11 +148,24 @@ def sql_to_spec(query):
                                     (word_match | Keyword("*")))
                           ).setParseAction(select_func)
 
+    select_distinct = (SELECT + Suppress(CaselessKeyword('DISTINCT')) + LPAREN
+                            + (word_match | Keyword("*"))
+                               + ZeroOrMore(Suppress(",")
+                               + (word_match | Keyword("*")))
+                            + Suppress(RPAREN)).setParseAction(select_distinct_func)
+
+    select_count = (SELECT + Suppress(CaselessKeyword('COUNT')) + LPAREN
+                            + (word_match | Keyword("*"))
+                               + ZeroOrMore(Suppress(",")
+                               + (word_match | Keyword("*")))
+                            + Suppress(RPAREN)).setParseAction(select_count_func)
+    LIMIT = (Suppress(CaselessKeyword('LIMIT')) + word_match).setParseAction(lambda t: {'limit': t[0]})
+    SKIP = (Suppress(CaselessKeyword('SKIP')) + word_match).setParseAction(lambda t: {'skip': t[0]})
     from_table = (FROM + word_match).setParseAction(
         lambda t: {'collection': t.asList()[0]})
     #word = ~(AND | OR) + word_match
 
-    operation_term = select_fields  # place holder for other SQL statements. ALTER, UPDATE, INSERT
+    operation_term = (select_distinct | select_count | select_fields)   # place holder for other SQL statements. ALTER, UPDATE, INSERT
     expr = Forward()
     atom = statement | (LPAREN + expr + RPAREN)
     and_term = (OneOrMore(atom) + ZeroOrMore(AND + atom)
@@ -137,7 +175,7 @@ def sql_to_spec(query):
     where_clause = (WHERE + or_term
                     ).setParseAction(lambda t: {'spec': t[0]})
     list_term = Optional(EXPLAIN) + operation_term + from_table + \
-                Optional(where_clause)
+                Optional(where_clause) + Optional(LIMIT) + Optional(SKIP)
     expr << list_term
 
     ret = expr.parseString(query.strip())
@@ -164,14 +202,14 @@ def spec_str(spec):
     elif isinstance(spec, dict):
         out_str = "{" + ', '.join(["{}:{}".format(x, spec_str(spec[x])
                                                   ) for x in sorted(spec)]) + "}"
-    elif isinstance(spec, str) and not spec.isdigit():
+    elif spec and isinstance(spec, str) and not spec.isdigit():
         out_str = "'" + spec + "'"
     else:
         out_str = spec
 
     return out_str
 
-
+@debug_print
 def create_mongo_shell_query(query_dict):
     """
     Create the queries similar to what you will us in mongo shell
@@ -185,7 +223,18 @@ def create_mongo_shell_query(query_dict):
     if query_dict.get('find'):
         shell_query += 'find({}, {})'.format(spec_str(query_dict.get('spec')),
                                              spec_str(query_dict.get('fields')))
-    if 'explain' in query_dict:
+    elif query_dict.get('distinct'):
+        shell_query += 'distinct({})'.format(spec_str(",".join(
+            [k for k in query_dict.get('fields').keys() if query_dict['fields'][k]])))
+    elif query_dict.get('count'):
+        shell_query += 'count({})'.format(spec_str(query_dict.get('spec')))
+    if query_dict.get('skip'):
+        shell_query += ".skip({})".format(query_dict.get('skip'))
+
+    if query_dict.get('limit'):
+        shell_query += ".limit({})".format(query_dict.get('limit'))
+
+    if query_dict.get('explain'):
         shell_query += ".explain()"
 
     return shell_query

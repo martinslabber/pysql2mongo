@@ -1,7 +1,7 @@
 pysql2mongo
 ===========
 
-Python functions to convert SQL query to mongo query
+Python functions to convert SQL query to mongo query.
 At present this is a utility to print how simple SQL select statements will look like as mongo queries.
 Best place to see what it can do is the test.py file.
 

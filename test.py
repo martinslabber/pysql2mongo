@@ -45,12 +45,11 @@ class TestSQLMongo(unittest.TestCase):
         #'mongo': """db.users.find( { age: { $gt: 25, $lte: 50 } },{})""",
     }, {
         'sql': """SELECT * FROM users WHERE user_id like "%bc%" """,
-        'mongo': """db.users.find( { user_id: /bc/ },{})""",
-        'willfail': True
+        'mongo': """db.users.find( { user_id: {$regex:'bc'} },{})""",
+        #'mongo': """db.users.find( { user_id: /bc/ },{})""",
     }, {
         'sql': """SELECT * FROM users WHERE user_id like "bc%" """,
-        'mongo': """db.users.find( { user_id: /^bc/ },{})""",
-        'willfail': True
+        'mongo': """db.users.find( { user_id: {$regex:'^bc'} },{})""",
     }, {
         'sql': """SELECT * FROM users WHERE status = "A" ORDER BY user_id ASC""",
         'mongo': """db.users.find( { status: 'A' } ,{}).sort( { user_id: 1 } )""",
@@ -61,8 +60,7 @@ class TestSQLMongo(unittest.TestCase):
         'willfail': True
     }, {
         'sql': """SELECT COUNT(*) FROM users""",
-        'mongo': """db.users.count()""",
-        'willfail': True
+        'mongo': """db.users.count({})""",
     }, {
         'sql': """SELECT COUNT(user_id) FROM users""",
         'mongo': """db.users.count({user_id: {$exists: true}})""",
@@ -70,23 +68,18 @@ class TestSQLMongo(unittest.TestCase):
     }, {
         'sql': """SELECT COUNT(*) FROM users WHERE age > 30""",
         'mongo': """db.users.count({age: {$gt: 30}})""",
-        'willfail': True
     }, {
         'sql': """SELECT DISTINCT(status) FROM users""",
-        'mongo': """db.users.distinct("status")""",
-        'willfail': True
+        'mongo': """db.users.distinct('status')""",
     }, {
         'sql': """SELECT * FROM users LIMIT 1""",
         'mongo': """db.users.find({},{}).limit(1)""",
-        'willfail': True
     }, {
         'sql': """SELECT * FROM users LIMIT 5 SKIP 10""",
-        'mongo': """db.users.find({},{}).limit(5).skip(10)""",
-        'willfail': True
+        'mongo': """db.users.find({},{}).skip(10).limit(5)""",
     }, {
         'sql': """EXPLAIN SELECT * FROM users WHERE status = "A" """,
-        'mongo': """db.users.find( { status: "A" },{} ).explain()""",
-        'willfail': True
+        'mongo': """db.users.find( { status: 'A' },{} ).explain()""",
     }]
 
     def test_01_spec_str(self):
